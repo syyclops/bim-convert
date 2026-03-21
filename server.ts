@@ -1,138 +1,268 @@
 import { join, resolve } from "path";
-import { mkdirSync, existsSync, rmSync, readdirSync, statSync } from "fs";
 import { randomUUID } from "crypto";
+import { loadConfig } from "./lib/config";
+import {
+  createBlobServiceClient,
+  createQueueClient,
+  ensureContainers,
+  ensureQueue,
+  setCorsRules,
+  generateUploadSasUrl,
+  generateDownloadSasUrl,
+  enqueueJob,
+  getQueueDepth,
+  blobExists,
+} from "./lib/storage";
+import {
+  createJob,
+  readJob,
+  writeJob,
+  updateJobStatus,
+  listJobIds,
+} from "./lib/jobs";
+import { startWorkerVm } from "./lib/vm";
 
-const ROOT_DIR = resolve(import.meta.dir);
-const CONVERTER_DIR = join(ROOT_DIR, "datadrivenlibs");
-const CONVERTER_EXE = join(CONVERTER_DIR, "RVT2IFCconverter.exe");
-const TEMP_DIR = join(ROOT_DIR, "temp");
-const CONVERSION_TIMEOUT_MS = 600_000; // 10 minutes
-const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500MB
-const PORT = 8000;
+const config = loadConfig();
 
-// Startup checks
-if (!existsSync(CONVERTER_EXE)) {
-  console.error(`Converter not found at ${CONVERTER_EXE}`);
-  process.exit(1);
+const blobService = createBlobServiceClient(config.storageConnectionString);
+const queueClient = createQueueClient(config.storageConnectionString, config.queueName);
+
+const inputsContainer = blobService.getContainerClient(config.containerInputs);
+const outputsContainer = blobService.getContainerClient(config.containerOutputs);
+const jobsContainer = blobService.getContainerClient(config.containerJobs);
+const logsContainer = blobService.getContainerClient(config.containerLogs);
+
+const INDEX_HTML = join(resolve(import.meta.dir), "index.html");
+
+// ---------------------------------------------------------------------------
+// Startup
+// ---------------------------------------------------------------------------
+
+await ensureContainers(blobService, [
+  config.containerInputs,
+  config.containerOutputs,
+  config.containerJobs,
+  config.containerLogs,
+]);
+await ensureQueue(queueClient);
+
+try {
+  await setCorsRules(blobService);
+} catch (err) {
+  // CORS setting may fail on Azurite in some configs — non-fatal
+  console.warn("[server] Failed to set CORS rules:", err instanceof Error ? err.message : err);
 }
-mkdirSync(TEMP_DIR, { recursive: true });
-cleanStaleTempDirs();
 
-function cleanStaleTempDirs() {
-  if (!existsSync(TEMP_DIR)) return;
-  const oneHourAgo = Date.now() - 60 * 60 * 1000;
-  for (const entry of readdirSync(TEMP_DIR)) {
-    const dirPath = join(TEMP_DIR, entry);
-    try {
-      if (statSync(dirPath).mtimeMs < oneHourAgo) {
-        rmSync(dirPath, { recursive: true, force: true });
+// Stale job scanner — runs every 5 minutes
+const STALE_SCAN_INTERVAL = 300_000;
+const STALE_THRESHOLD_MS = config.conversionTimeoutMs + 300_000; // timeout + 5 min
+
+setInterval(async () => {
+  try {
+    const jobIds = await listJobIds(jobsContainer);
+    for (const id of jobIds) {
+      const job = await readJob(jobsContainer, id);
+      if (!job || job.status !== "running" || !job.startedAt) continue;
+
+      const elapsed = Date.now() - new Date(job.startedAt).getTime();
+      if (elapsed > STALE_THRESHOLD_MS) {
+        console.log(`[server] Marking stale job ${id} as failed (running for ${Math.round(elapsed / 1000)}s)`);
+        await updateJobStatus(jobsContainer, id, "failed", {
+          finishedAt: new Date().toISOString(),
+          error: "Worker timeout — conversion may have crashed",
+        });
       }
-    } catch {}
+    }
+  } catch (err) {
+    console.error("[server] Stale scan error:", err);
   }
-}
+}, STALE_SCAN_INTERVAL);
 
-const INDEX_HTML = join(ROOT_DIR, "index.html");
+// ---------------------------------------------------------------------------
+// HTTP server
+// ---------------------------------------------------------------------------
 
 const server = Bun.serve({
-  port: PORT,
-  maxRequestBodySize: MAX_FILE_SIZE,
+  port: config.port,
 
   async fetch(req) {
     const url = new URL(req.url);
 
+    // GET / — serve UI
     if (req.method === "GET" && url.pathname === "/") {
       return new Response(Bun.file(INDEX_HTML));
     }
 
+    // GET /health
     if (req.method === "GET" && url.pathname === "/health") {
       return Response.json({ status: "ok" });
     }
 
-    if (req.method === "POST" && url.pathname === "/convert") {
-      return handleConvert(req);
+    // POST /jobs — create a new conversion job
+    if (req.method === "POST" && url.pathname === "/jobs") {
+      return handleCreateJob(req);
+    }
+
+    // POST /jobs/:id/submit — submit job for conversion
+    const submitMatch = url.pathname.match(/^\/jobs\/([^/]+)\/submit$/);
+    if (req.method === "POST" && submitMatch) {
+      return handleSubmitJob(submitMatch[1]);
+    }
+
+    // GET /jobs/:id — poll job status
+    const statusMatch = url.pathname.match(/^\/jobs\/([^/]+)$/);
+    if (req.method === "GET" && statusMatch) {
+      return handleGetJob(statusMatch[1]);
     }
 
     return new Response("Not Found", { status: 404 });
   },
 });
 
-console.log(`BIM Convert API running on http://localhost:${server.port}`);
+console.log(`[server] BIM Convert API running on http://localhost:${server.port}`);
 
-async function handleConvert(req: Request): Promise<Response> {
-  const jobId = randomUUID();
-  const jobDir = join(TEMP_DIR, jobId);
+// ---------------------------------------------------------------------------
+// Route handlers
+// ---------------------------------------------------------------------------
 
+async function handleCreateJob(req: Request): Promise<Response> {
   try {
-    // Parse multipart form
-    const formData = await req.formData();
-    const file = formData.get("file");
+    const body = (await req.json()) as { fileName?: string };
+    const fileName = body?.fileName;
 
-    if (!file || !(file instanceof File)) {
-      return Response.json({ error: "No file uploaded. Send as multipart form with field 'file'." }, { status: 400 });
+    if (!fileName || typeof fileName !== "string") {
+      return Response.json({ error: "fileName is required" }, { status: 400 });
     }
 
-    if (!file.name.toLowerCase().endsWith(".rvt")) {
+    if (!fileName.toLowerCase().endsWith(".rvt")) {
       return Response.json({ error: "File must be a .rvt file" }, { status: 400 });
     }
 
-    if (file.size > MAX_FILE_SIZE) {
-      return Response.json({ error: `File too large. Max size is ${MAX_FILE_SIZE / 1024 / 1024}MB` }, { status: 413 });
-    }
+    const jobId = randomUUID();
+    const job = createJob(jobId, fileName);
+    await writeJob(jobsContainer, job);
 
-    // Write upload to temp dir
-    mkdirSync(jobDir, { recursive: true });
-    const inputPath = join(jobDir, "input.rvt");
-    const outputPath = join(jobDir, "output.ifc");
-
-    await Bun.write(inputPath, file);
-
-    // Run conversion
-    const proc = Bun.spawn(
-      [CONVERTER_EXE, inputPath, outputPath, "preset=standard"],
-      {
-        cwd: CONVERTER_DIR,
-        stdout: "pipe",
-        stderr: "pipe",
-      }
+    const uploadUrl = generateUploadSasUrl(
+      config.storageConnectionString,
+      config.containerInputs,
+      `${jobId}.rvt`,
+      config.sasExpiryMinutes,
     );
 
-    // Wait with timeout
-    const timeoutId = setTimeout(() => proc.kill(), CONVERSION_TIMEOUT_MS);
-    const exitCode = await proc.exited;
-    clearTimeout(timeoutId);
+    return Response.json({
+      jobId,
+      uploadUrl,
+      submitUrl: `/jobs/${jobId}/submit`,
+      statusUrl: `/jobs/${jobId}`,
+    });
+  } catch (err) {
+    console.error("[server] Create job error:", err);
+    return Response.json({ error: "Failed to create job" }, { status: 500 });
+  }
+}
 
-    if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
+async function handleSubmitJob(jobId: string): Promise<Response> {
+  try {
+    const job = await readJob(jobsContainer, jobId);
+    if (!job) {
+      return Response.json({ error: "Job not found" }, { status: 404 });
+    }
+
+    if (job.status !== "created") {
       return Response.json(
-        { error: "Conversion failed", details: stderr || `Exit code: ${exitCode}` },
-        { status: 500 }
+        { error: `Job cannot be submitted in status "${job.status}"` },
+        { status: 409 },
       );
     }
 
-    if (!existsSync(outputPath)) {
-      return Response.json({ error: "Conversion produced no output file" }, { status: 500 });
+    // Verify input blob was uploaded
+    const inputExists = await blobExists(inputsContainer, `${jobId}.rvt`);
+    if (!inputExists) {
+      return Response.json(
+        { error: "Input file not uploaded yet. Upload to the uploadUrl first." },
+        { status: 400 },
+      );
     }
 
-    // Return the IFC file
-    const outputFile = Bun.file(outputPath);
-    const outputName = file.name.replace(/\.rvt$/i, ".ifc");
+    // Check queue depth
+    const depth = await getQueueDepth(queueClient);
+    if (depth >= config.maxQueuedJobs) {
+      return Response.json(
+        { error: `Queue is full (${depth}/${config.maxQueuedJobs}). Try again later.` },
+        { status: 429 },
+      );
+    }
 
-    const response = new Response(outputFile, {
-      headers: {
-        "Content-Type": "application/octet-stream",
-        "Content-Disposition": `attachment; filename="${outputName}"`,
-      },
+    // Update job status
+    await updateJobStatus(jobsContainer, jobId, "queued", {
+      queuedAt: new Date().toISOString(),
     });
 
-    // Schedule cleanup after response is consumed
-    // Use a small delay to ensure the response stream completes
-    setTimeout(() => rmSync(jobDir, { recursive: true, force: true }), 5000);
+    // Enqueue
+    await enqueueJob(queueClient, jobId);
 
-    return response;
+    // Start worker VM (fire-and-forget, debounced)
+    startWorkerVm(config).catch((err) => {
+      console.error("[server] Failed to start worker VM:", err);
+    });
+
+    return Response.json({ statusUrl: `/jobs/${jobId}` }, { status: 202 });
   } catch (err) {
-    // Clean up on error
-    try { rmSync(jobDir, { recursive: true, force: true }); } catch {}
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return Response.json({ error: "Internal server error", details: message }, { status: 500 });
+    console.error("[server] Submit job error:", err);
+    return Response.json({ error: "Failed to submit job" }, { status: 500 });
+  }
+}
+
+async function handleGetJob(jobId: string): Promise<Response> {
+  try {
+    const job = await readJob(jobsContainer, jobId);
+    if (!job) {
+      return Response.json({ error: "Job not found" }, { status: 404 });
+    }
+
+    const response: Record<string, unknown> = {
+      id: job.id,
+      status: job.status,
+      progress: job.progress,
+      fileName: job.fileName,
+      createdAt: job.createdAt,
+      queuedAt: job.queuedAt,
+      startedAt: job.startedAt,
+      finishedAt: job.finishedAt,
+      error: job.error,
+    };
+
+    // Generate download URLs for completed jobs
+    if (job.status === "succeeded") {
+      const outputExists = await blobExists(outputsContainer, `${jobId}.ifc`);
+      if (outputExists) {
+        const ifcName = job.fileName.replace(/\.rvt$/i, ".ifc");
+        response.downloadUrl = generateDownloadSasUrl(
+          config.storageConnectionString,
+          config.containerOutputs,
+          `${jobId}.ifc`,
+          15, // 15 min download window
+          ifcName,
+        );
+      }
+    }
+
+    // Attach log URL for succeeded or failed jobs
+    if (job.status === "succeeded" || job.status === "failed") {
+      const logExists = await blobExists(logsContainer, `${jobId}.log`);
+      if (logExists) {
+        response.logUrl = generateDownloadSasUrl(
+          config.storageConnectionString,
+          config.containerLogs,
+          `${jobId}.log`,
+          15,
+        );
+      }
+    }
+
+    return Response.json(response);
+  } catch (err) {
+    console.error("[server] Get job error:", err);
+    return Response.json({ error: "Failed to get job status" }, { status: 500 });
   }
 }

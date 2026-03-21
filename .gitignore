@@ -6,3 +6,7 @@ node_modules/
 *.tfstate*
 *.tfvars
 .terraform.lock.hcl
+dev/azurite-data/
+.env.local
+.env.*.local
+app.zip

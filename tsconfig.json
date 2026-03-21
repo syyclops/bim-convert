@@ -5,6 +5,7 @@
     "moduleResolution": "bundler",
     "target": "esnext",
     "lib": ["esnext"],
-    "types": ["bun-types"]
+    "types": ["bun-types"],
+    "skipLibCheck": true
   }
 }

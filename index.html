@@ -19,10 +19,18 @@
   .bar div { height: 100%; width: 0%; background: #111; transition: width 0.3s; }
   a.dl { display: inline-block; margin-top: 14px; color: #111; font-weight: 500; font-size: 14px; text-decoration: underline; text-underline-offset: 3px; }
   a.dl:hover { color: #555; }
+  .log-link { display: inline-block; margin-left: 16px; color: #999; font-size: 13px; text-decoration: underline; text-underline-offset: 2px; }
+  .log-link:hover { color: #555; }
   .divider { border: none; border-top: 1px solid #f0f0f0; margin: 48px 0 28px; }
   h2 { font-size: 13px; font-weight: 500; color: #999; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
-  pre { background: #fafafa; border: 1px solid #f0f0f0; border-radius: 8px; padding: 16px 20px; font-size: 13px; overflow-x: auto; line-height: 1.6; }
+  pre { background: #fafafa; border: 1px solid #f0f0f0; border-radius: 8px; padding: 16px 20px; font-size: 13px; overflow-x: auto; line-height: 1.7; }
   code { font-family: 'SF Mono', Menlo, Consolas, monospace; color: #333; }
+  .sh-comment { color: #aaa; font-style: italic; }
+  .sh-cmd { color: #111; font-weight: 600; }
+  .sh-flag { color: #666; }
+  .sh-string { color: #555; }
+  .sh-url { color: #111; }
+  .sh-placeholder { color: #999; background: #f0f0f0; border-radius: 3px; padding: 0 3px; font-style: italic; }
 </style>
 </head>
 <body>
@@ -37,46 +45,202 @@
 <h2>API</h2>
 <pre><code id="curl"></code></pre>
 <script>
-document.getElementById('curl').textContent = `curl -X POST ${location.origin}/convert \\\n  -F "file=@MyBuilding.rvt" \\\n  --output MyBuilding.ifc`;
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function hl(lines) {
+  return lines.map(line => {
+    if (line.match(/^\s*#/)) return `<span class="sh-comment">${esc(line)}</span>`;
+    if (!line.trim()) return '';
+    // tokenize by splitting on whitespace, preserving it
+    return line.split(/(\s+)/).map(tok => {
+      if (!tok.trim()) return tok;
+      if (tok === 'curl') return `<span class="sh-cmd">${tok}</span>`;
+      if (tok.match(/^--?\w/)) return `<span class="sh-flag">${esc(tok)}</span>`;
+      if (tok.match(/^https?:\/\//)) {
+        // highlight <placeholder> inside URLs
+        return `<span class="sh-url">${esc(tok).replace(/&lt;(\w+)&gt;/g,'<span class="sh-placeholder">&lt;$1&gt;</span>')}</span>`;
+      }
+      if (tok.match(/^['"]/) || tok.match(/^@/)) return `<span class="sh-string">${esc(tok)}</span>`;
+      if (tok === '\\') return tok;
+      // standalone <placeholder>
+      if (tok.match(/^<\w+>$/)) return `<span class="sh-placeholder">${esc(tok)}</span>`;
+      return esc(tok);
+    }).join('');
+  }).join('\n');
+}
+const o = location.origin;
+document.getElementById('curl').innerHTML = hl([
+  '# 1. Create job',
+  `curl -X POST ${o}/jobs \\`,
+  `  -H 'Content-Type: application/json' \\`,
+  `  -d '{"fileName":"MyBuilding.rvt"}'`,
+  '',
+  '# 2. Upload file (use uploadUrl from response)',
+  `curl -X PUT "<uploadUrl>" \\`,
+  `  -H "x-ms-blob-type: BlockBlob" \\`,
+  '  --data-binary @MyBuilding.rvt',
+  '',
+  '# 3. Submit for conversion',
+  `curl -X POST ${o}/jobs/<id>/submit`,
+  '',
+  '# 4. Poll status (until status is "succeeded")',
+  `curl ${o}/jobs/<id>`,
+  '',
+  '# 5. Download result (use downloadUrl from response)',
+  'curl -o MyBuilding.ifc "<downloadUrl>"',
+]);
+
 const drop = document.getElementById('drop');
 const input = document.getElementById('file');
 const status = document.getElementById('status');
 drop.onclick = () => input.click();
 drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
 drop.ondragleave = () => drop.classList.remove('over');
-drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); };
-input.onchange = () => { if (input.files[0]) upload(input.files[0]); };
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) start(e.dataTransfer.files[0]); };
+input.onchange = () => { if (input.files[0]) start(input.files[0]); };
 
-async function upload(file) {
-  if (!file.name.toLowerCase().endsWith('.rvt')) { show('Please select a .rvt file', true); return; }
-  const name = file.name.replace(/\.rvt$/i, '.ifc');
-  drop.style.display = 'none';
-  show('<div class="bar"><div id="bar"></div></div>Uploading...', false);
-  const form = new FormData();
-  form.append('file', file);
-  const xhr = new XMLHttpRequest();
-  xhr.open('POST', '/convert');
-  xhr.responseType = 'blob';
-  xhr.upload.onprogress = e => { if (e.lengthComputable) { document.getElementById('bar').style.width = (e.loaded/e.total*50)+'%'; } };
-  xhr.onprogress = () => { document.getElementById('bar').style.width = '75%'; status.childNodes[1].textContent = 'Converting...'; };
-  xhr.onload = () => {
-    if (xhr.status === 200) {
-      document.getElementById('bar').style.width = '100%';
-      const url = URL.createObjectURL(xhr.response);
-      status.innerHTML = 'Done. <a class="dl" href="'+url+'" download="'+name+'">Download '+name+'</a>';
-    } else {
-      try { xhr.response.text().then(t => { const j = JSON.parse(t); show(j.error || 'Conversion failed', true); }); }
-      catch { show('Conversion failed (HTTP '+xhr.status+')', true); }
-    }
-  };
-  xhr.onerror = () => show('Network error', true);
-  xhr.send(form);
+// Resume polling if ?job= is in the URL
+const params = new URLSearchParams(location.search);
+const resumeJobId = params.get('job');
+if (resumeJobId) {
+  resumeJob(resumeJobId);
 }
 
-function show(msg, err) {
+async function resumeJob(jobId) {
+  drop.style.display = 'none';
+  status.innerHTML = '<div class="bar"><div id="bar"></div></div><span id="msg">Reconnecting...</span>';
+  status.className = '';
+
+  try {
+    const pollRes = await fetch('/jobs/' + jobId);
+    if (!pollRes.ok) throw new Error('Job not found');
+    const job = await pollRes.json();
+    const outputName = (job.fileName || 'output.rvt').replace(/\.rvt$/i, '.ifc');
+
+    if (job.status === 'succeeded') {
+      showResult(job, outputName);
+      return;
+    }
+    if (job.status === 'failed') {
+      throw new Error(job.error || 'Conversion failed');
+    }
+
+    // Still in progress — start polling
+    await pollJob('/jobs/' + jobId, outputName);
+  } catch (err) {
+    clearJobParam();
+    showError(err.message || 'Something went wrong');
+  }
+}
+
+function setJobParam(jobId) {
+  const url = new URL(location.href);
+  url.searchParams.set('job', jobId);
+  history.replaceState(null, '', url);
+}
+
+function clearJobParam() {
+  const url = new URL(location.href);
+  url.searchParams.delete('job');
+  history.replaceState(null, '', url);
+}
+
+async function start(file) {
+  if (!file.name.toLowerCase().endsWith('.rvt')) { showError('Please select a .rvt file'); return; }
+  const outputName = file.name.replace(/\.rvt$/i, '.ifc');
+  drop.style.display = 'none';
+  status.innerHTML = '<div class="bar"><div id="bar"></div></div><span id="msg">Creating job...</span>';
+  status.className = '';
+
+  try {
+    // Step 1: Create job
+    const createRes = await fetch('/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileName: file.name }),
+    });
+    if (!createRes.ok) { const e = await createRes.json(); throw new Error(e.error || 'Failed to create job'); }
+    const { jobId, uploadUrl, submitUrl, statusUrl } = await createRes.json();
+
+    // Persist job ID in URL so refresh resumes
+    setJobParam(jobId);
+
+    // Step 2: Upload file directly to blob storage via SAS URL
+    setBar(0);
+    setText('Uploading...');
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', uploadUrl);
+      xhr.setRequestHeader('x-ms-blob-type', 'BlockBlob');
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable) setBar((e.loaded / e.total) * 50);
+      };
+      xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error('Upload failed: HTTP ' + xhr.status));
+      xhr.onerror = () => reject(new Error('Upload network error'));
+      xhr.send(file);
+    });
+
+    // Step 3: Submit for conversion
+    setBar(50);
+    setText('Submitting...');
+    const submitRes = await fetch(submitUrl, { method: 'POST' });
+    if (!submitRes.ok) { const e = await submitRes.json(); throw new Error(e.error || 'Failed to submit'); }
+
+    // Step 4: Poll for status
+    await pollJob(statusUrl, outputName);
+  } catch (err) {
+    clearJobParam();
+    showError(err.message || 'Something went wrong');
+  }
+}
+
+async function pollJob(statusUrl, outputName) {
+  setText('Queued...');
+  while (true) {
+    await sleep(2000);
+    const pollRes = await fetch(statusUrl);
+    if (!pollRes.ok) continue;
+    const job = await pollRes.json();
+
+    if (job.status === 'queued') {
+      setText('Queued...');
+    } else if (job.status === 'running') {
+      const pct = job.progress || 0;
+      setBar(50 + (pct / 100) * 45);
+      setText('Converting... ' + pct + '%');
+    } else if (job.status === 'succeeded') {
+      showResult(job, outputName);
+      return;
+    } else if (job.status === 'failed') {
+      throw new Error(job.error || 'Conversion failed');
+    }
+  }
+}
+
+function showResult(job, outputName) {
+  setBar(100);
+  let html = 'Done. <a class="dl" href="' + job.downloadUrl + '" download="' + outputName + '">Download ' + outputName + '</a>';
+  if (job.logUrl) html += '<a class="log-link" href="' + job.logUrl + '" target="_blank">View log</a>';
+  status.innerHTML = html;
+}
+
+function setBar(pct) {
+  const bar = document.getElementById('bar');
+  if (bar) bar.style.width = Math.min(100, pct) + '%';
+}
+
+function setText(msg) {
+  const el = document.getElementById('msg');
+  if (el) el.textContent = msg;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function showError(msg) {
   status.innerHTML = msg;
-  status.className = err ? 'error' : '';
-  if (err) { drop.style.display = ''; input.value = ''; }
+  status.className = 'error';
+  drop.style.display = '';
+  input.value = '';
 }
 </script>
 </body>
