@@ -6,29 +6,38 @@
 <title>BIM Convert</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, system-ui, sans-serif; max-width: 480px; margin: 80px auto; padding: 0 20px; }
-  h1 { font-size: 24px; font-weight: 600; }
-  p { color: #666; margin: 8px 0 32px; font-size: 14px; }
-  .drop { border: 2px dashed #ccc; border-radius: 8px; padding: 48px 24px; text-align: center; cursor: pointer; transition: border-color 0.15s; }
-  .drop:hover, .drop.over { border-color: #000; }
-  .drop span { font-size: 14px; color: #999; }
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 520px; margin: 100px auto; padding: 0 24px; color: #111; }
+  h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.3px; }
+  .subtitle { color: #888; margin: 6px 0 36px; font-size: 14px; }
+  .drop { border: 1.5px dashed #d0d0d0; border-radius: 10px; padding: 44px 24px; text-align: center; cursor: pointer; transition: all 0.15s; }
+  .drop:hover, .drop.over { border-color: #111; background: #fafafa; }
+  .drop span { font-size: 14px; color: #aaa; }
   .drop input { display: none; }
-  #status { margin-top: 24px; font-size: 14px; }
-  #status.error { color: #d00; }
-  .bar { background: #eee; border-radius: 4px; height: 6px; margin-top: 12px; overflow: hidden; }
-  .bar div { height: 100%; width: 0%; background: #000; transition: width 0.3s; }
-  a.dl { display: inline-block; margin-top: 16px; color: #000; font-weight: 500; font-size: 14px; }
+  #status { margin-top: 20px; font-size: 14px; color: #555; }
+  #status.error { color: #c00; }
+  .bar { background: #f0f0f0; border-radius: 3px; height: 4px; margin-top: 10px; overflow: hidden; }
+  .bar div { height: 100%; width: 0%; background: #111; transition: width 0.3s; }
+  a.dl { display: inline-block; margin-top: 14px; color: #111; font-weight: 500; font-size: 14px; text-decoration: underline; text-underline-offset: 3px; }
+  a.dl:hover { color: #555; }
+  .divider { border: none; border-top: 1px solid #f0f0f0; margin: 48px 0 28px; }
+  h2 { font-size: 13px; font-weight: 500; color: #999; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+  pre { background: #fafafa; border: 1px solid #f0f0f0; border-radius: 8px; padding: 16px 20px; font-size: 13px; overflow-x: auto; line-height: 1.6; }
+  code { font-family: 'SF Mono', Menlo, Consolas, monospace; color: #333; }
 </style>
 </head>
 <body>
 <h1>BIM Convert</h1>
-<p>Convert Revit (.rvt) files to IFC. Upload a file and download the result.</p>
+<p class="subtitle">Convert Revit (.rvt) files to IFC. Max file size 500 MB.</p>
 <div class="drop" id="drop">
   <span>Drop .rvt file here or click to browse</span>
   <input type="file" accept=".rvt" id="file">
 </div>
 <div id="status"></div>
+<hr class="divider">
+<h2>API</h2>
+<pre><code id="curl"></code></pre>
 <script>
+document.getElementById('curl').textContent = `curl -X POST ${location.origin}/convert \\\n  -F "file=@MyBuilding.rvt" \\\n  --output MyBuilding.ifc`;
 const drop = document.getElementById('drop');
 const input = document.getElementById('file');
 const status = document.getElementById('status');
