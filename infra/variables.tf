@@ -33,3 +33,8 @@ variable "allowed_ip" {
   type        = string
   default     = "*"
 }
+
+variable "domain" {
+  description = "Domain name for HTTPS (e.g. convert.example.com). Set your DNS A record to point to the VM IP."
+  type        = string
+}

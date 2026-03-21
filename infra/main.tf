@@ -96,13 +96,25 @@ resource "azurerm_network_security_group" "main" {
   resource_group_name = azurerm_resource_group.main.name
 
   security_rule {
-    name                       = "AllowAPI"
+    name                       = "AllowHTTPS"
     priority                   = 100
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_range     = "8000"
+    destination_port_range     = "443"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "AllowHTTP"
+    priority                   = 105
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "80"
     source_address_prefix      = "*"
     destination_address_prefix = "*"
   }
@@ -202,6 +214,6 @@ resource "azurerm_virtual_machine_extension" "bootstrap" {
   protected_settings = jsonencode({
     storageAccountName = azurerm_storage_account.main.name
     storageAccountKey  = azurerm_storage_account.main.primary_access_key
-    commandToExecute   = "powershell -ExecutionPolicy Unrestricted -File bootstrap.ps1"
+    commandToExecute   = "powershell -ExecutionPolicy Unrestricted -File bootstrap.ps1 -Domain ${var.domain}"
   })
 }

@@ -1,8 +1,8 @@
 # bim-convert
 
-HTTP API that converts Revit (.rvt) files to IFC. Upload a file, get the IFC back. One-command deploy to Azure.
+HTTP API that converts Revit (.rvt) files to IFC. Upload a file, get the IFC back. One-command deploy to Azure with automatic HTTPS.
 
-Uses [DDC RVT2IFC Converter](https://github.com/nickvdwielen/cad2data-Revit-IFC-DWG-DGN-pipeline-with-conversion-validation-qto) under the hood — no Revit license required.
+Uses [DDC RVT2IFC Converter](https://github.com/datadrivenconstruction/cad2data-Revit-IFC-DWG-DGN) under the hood — no Revit license required.
 
 ## How it works
 
@@ -10,7 +10,7 @@ Uses [DDC RVT2IFC Converter](https://github.com/nickvdwielen/cad2data-Revit-IFC-
 POST /convert  →  upload .rvt  →  get .ifc back
 ```
 
-The API is a single `server.ts` file running on [Bun](https://bun.sh) with zero dependencies. It shells out to `RVT2IFCconverter.exe` which must run on Windows.
+The API is a single `server.ts` file running on [Bun](https://bun.sh) with zero dependencies. It shells out to `RVT2IFCconverter.exe` which must run on Windows. [Caddy](https://caddyserver.com) handles HTTPS with automatic Let's Encrypt certificates.
 
 ## Quick start (local on Windows)
 
@@ -27,13 +27,14 @@ bun run server.ts
 
 ## Deploy to Azure
 
-Terraform provisions a Windows VM, uploads everything, and starts the service automatically.
+Terraform provisions a Windows VM with HTTPS, uploads everything, and starts the service automatically.
 
 ### Prerequisites
 
 - [Terraform](https://www.terraform.io/downloads) installed
 - [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) installed
 - `datadrivenlibs/` directory with the DDC converter in the project root
+- A domain name you control
 
 ### Deploy
 
@@ -45,15 +46,18 @@ terraform init
 terraform apply
 ```
 
-Terraform will prompt for `admin_password`. Once complete, it outputs the API URL.
+Terraform will prompt for `admin_password` and `domain`. Once complete, it outputs the VM's public IP.
+
+**After deploy:** Create a DNS A record pointing your domain to the VM IP. Caddy will automatically provision a Let's Encrypt certificate on the first request.
 
 ### Configuration
 
 | Variable          | Default           | Description                     |
 | ----------------- | ----------------- | ------------------------------- |
+| `domain`          | _required_        | Domain for HTTPS (e.g. `convert.example.com`) |
+| `admin_password`  | _required_        | VM admin password               |
 | `location`        | `eastus`          | Azure region                    |
 | `vm_size`         | `Standard_D2s_v3` | VM size (2 vCPU, 8GB RAM)       |
-| `admin_password`  | _required_        | VM admin password               |
 | `allowed_ip`      | `*`               | IP allowed for RDP access       |
 | `resource_prefix` | `bimconvert`      | Prefix for Azure resource names |
 
@@ -75,7 +79,7 @@ Returns `{"status": "ok"}`.
 Upload a `.rvt` file as multipart form data. Returns the `.ifc` file.
 
 ```bash
-curl -X POST http://<ip>:8000/convert \
+curl -X POST https://convert.example.com/convert \
   -F "file=@MyBuilding.rvt" \
   --output MyBuilding.ifc
 ```
@@ -94,7 +98,11 @@ server.ts              API server (single file, zero dependencies)
 infra/
   main.tf              Azure resources (VM, networking, storage)
   variables.tf         Configurable inputs
-  outputs.tf           API URL and VM IP
-  bootstrap.ps1        VM setup script (Bun, NSSM service, firewall)
+  outputs.tf           API URL, VM IP, DNS instructions
+  bootstrap.ps1        VM setup script (Bun, Caddy, NSSM services)
 datadrivenlibs/        DDC converter exe + DLLs (not in repo — bring your own)
 ```
+
+## License
+
+MIT

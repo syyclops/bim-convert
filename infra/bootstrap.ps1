@@ -1,3 +1,7 @@
+param(
+    [string]$Domain
+)
+
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $logFile = "C:\bim-convert-setup.log"
@@ -13,20 +17,25 @@ Log "Starting BIM Convert setup..."
 $appDir = "C:\bim-convert"
 $bunDir = "C:\bun"
 $bunExe = "$bunDir\bun.exe"
+$caddyDir = "C:\caddy"
+$caddyExe = "$caddyDir\caddy.exe"
 $nssmDir = "C:\nssm"
 $nssmExe = "$nssmDir\nssm-2.24\win64\nssm.exe"
 
-# Stop existing service if running (so we can overwrite files)
+# Stop existing services if running (so we can overwrite files)
 if (Test-Path $nssmExe) {
-    Log "Stopping existing BIMConvert service..."
-    & $nssmExe stop BIMConvert 2>$null
-    & $nssmExe remove BIMConvert confirm 2>$null
+    Log "Stopping existing services..."
+    try { & $nssmExe stop BIMConvert } catch {}
+    try { & $nssmExe remove BIMConvert confirm } catch {}
+    try { & $nssmExe stop Caddy } catch {}
+    try { & $nssmExe remove Caddy confirm } catch {}
     Start-Sleep -Seconds 2
 }
 
 New-Item -ItemType Directory -Path $appDir -Force | Out-Null
 New-Item -ItemType Directory -Path "$appDir\temp" -Force | Out-Null
 New-Item -ItemType Directory -Path $bunDir -Force | Out-Null
+New-Item -ItemType Directory -Path $caddyDir -Force | Out-Null
 
 # Copy server.ts
 Log "Copying server.ts..."
@@ -48,7 +57,7 @@ if (-not $vcInstalled) {
     Log "VC++ Redistributable already installed, skipping."
 }
 
-# Install Bun (skip if already present and correct)
+# Install Bun (skip if already present)
 if (-not (Test-Path $bunExe)) {
     Log "Installing Bun..."
     $bunZip = "$env:TEMP\bun.zip"
@@ -65,6 +74,25 @@ if (-not (Test-Path $bunExe)) {
     exit 1
 }
 
+# Install Caddy (skip if already present)
+if (-not (Test-Path $caddyExe)) {
+    Log "Installing Caddy..."
+    $caddyZip = "$env:TEMP\caddy.zip"
+    Invoke-WebRequest -Uri "https://github.com/caddyserver/caddy/releases/download/v2.9.1/caddy_2.9.1_windows_amd64.zip" -OutFile $caddyZip
+    Expand-Archive -Path $caddyZip -DestinationPath $caddyDir -Force
+    Log "Caddy installed."
+} else {
+    Log "Caddy already installed, skipping."
+}
+
+# Write Caddyfile
+Log "Writing Caddyfile for domain: $Domain"
+@"
+$Domain {
+    reverse_proxy localhost:8000
+}
+"@ | Set-Content -Path "$caddyDir\Caddyfile" -Force
+
 # Install NSSM (skip if already present)
 if (-not (Test-Path $nssmExe)) {
     Log "Installing NSSM..."
@@ -76,7 +104,7 @@ if (-not (Test-Path $nssmExe)) {
     Log "NSSM already installed, skipping."
 }
 
-# Create and start Windows service
+# Create BIMConvert service
 Log "Creating BIMConvert service..."
 & $nssmExe install BIMConvert $bunExe "run" "$appDir\server.ts"
 & $nssmExe set BIMConvert AppDirectory $appDir
@@ -89,13 +117,30 @@ Log "Creating BIMConvert service..."
 Log "Starting BIMConvert service..."
 & $nssmExe start BIMConvert
 
-# Open firewall (ignore if rule already exists)
-$existingRule = Get-NetFirewallRule -DisplayName "BIM Convert API" -ErrorAction SilentlyContinue
-if (-not $existingRule) {
-    Log "Opening firewall port 8000..."
-    New-NetFirewallRule -DisplayName "BIM Convert API" -Direction Inbound -LocalPort 8000 -Protocol TCP -Action Allow
-} else {
-    Log "Firewall rule already exists, skipping."
+# Create Caddy service
+Log "Creating Caddy service..."
+& $nssmExe install Caddy $caddyExe "run" "--config" "$caddyDir\Caddyfile"
+& $nssmExe set Caddy AppDirectory $caddyDir
+& $nssmExe set Caddy DisplayName "Caddy Reverse Proxy"
+& $nssmExe set Caddy Description "HTTPS reverse proxy for BIM Convert API"
+& $nssmExe set Caddy Start SERVICE_AUTO_START
+& $nssmExe set Caddy AppStdout "$caddyDir\caddy-stdout.log"
+& $nssmExe set Caddy AppStderr "$caddyDir\caddy-stderr.log"
+
+Log "Starting Caddy service..."
+& $nssmExe start Caddy
+
+# Open firewall
+$rules = @(
+    @{ Name = "BIM Convert HTTPS"; Port = 443 },
+    @{ Name = "BIM Convert HTTP"; Port = 80 }
+)
+foreach ($rule in $rules) {
+    $existing = Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue
+    if (-not $existing) {
+        Log "Opening firewall port $($rule.Port)..."
+        New-NetFirewallRule -DisplayName $rule.Name -Direction Inbound -LocalPort $rule.Port -Protocol TCP -Action Allow
+    }
 }
 
-Log "Setup complete! API should be available on port 8000."
+Log "Setup complete! API available at https://$Domain"
