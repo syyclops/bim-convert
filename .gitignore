@@ -1,0 +1,8 @@
+temp/
+datadrivenlibs/
+datadrivenlibs.zip
+node_modules/
+.terraform/
+*.tfstate*
+*.tfvars
+.terraform.lock.hcl
