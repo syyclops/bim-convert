@@ -37,9 +37,10 @@ New-Item -ItemType Directory -Path "$appDir\temp" -Force | Out-Null
 New-Item -ItemType Directory -Path $bunDir -Force | Out-Null
 New-Item -ItemType Directory -Path $caddyDir -Force | Out-Null
 
-# Copy server.ts
-Log "Copying server.ts..."
+# Copy app files
+Log "Copying app files..."
 Copy-Item -Path ".\server.ts" -Destination "$appDir\server.ts" -Force
+Copy-Item -Path ".\index.html" -Destination "$appDir\index.html" -Force
 
 # Extract datadrivenlibs
 Log "Extracting datadrivenlibs..."

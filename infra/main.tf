@@ -44,6 +44,16 @@ resource "azurerm_storage_blob" "server_ts" {
   content_md5            = filemd5("${path.module}/../server.ts")
 }
 
+# Upload index.html — content_md5 forces re-upload on file change
+resource "azurerm_storage_blob" "index_html" {
+  name                   = "index.html"
+  storage_account_name   = azurerm_storage_account.main.name
+  storage_container_name = azurerm_storage_container.deploy.name
+  type                   = "Block"
+  source                 = "${path.module}/../index.html"
+  content_md5            = filemd5("${path.module}/../index.html")
+}
+
 # Upload bootstrap.ps1 — content_md5 forces re-upload on file change
 resource "azurerm_storage_blob" "bootstrap" {
   name                   = "bootstrap.ps1"
@@ -197,6 +207,7 @@ resource "azurerm_virtual_machine_extension" "bootstrap" {
   auto_upgrade_minor_version = true
 
   depends_on = [
+    azurerm_storage_blob.index_html,
     azurerm_storage_blob.server_ts,
     azurerm_storage_blob.bootstrap,
     azurerm_storage_blob.datadrivenlibs_zip,
@@ -205,6 +216,7 @@ resource "azurerm_virtual_machine_extension" "bootstrap" {
   settings = jsonencode({
     fileUris = [
       "${azurerm_storage_account.main.primary_blob_endpoint}deploy/bootstrap.ps1",
+      "${azurerm_storage_account.main.primary_blob_endpoint}deploy/index.html",
       "${azurerm_storage_account.main.primary_blob_endpoint}deploy/server.ts",
       "${azurerm_storage_account.main.primary_blob_endpoint}deploy/datadrivenlibs.zip"
     ]

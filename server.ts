@@ -31,12 +31,18 @@ function cleanStaleTempDirs() {
   }
 }
 
+const INDEX_HTML = join(ROOT_DIR, "index.html");
+
 const server = Bun.serve({
   port: PORT,
   maxRequestBodySize: MAX_FILE_SIZE,
 
   async fetch(req) {
     const url = new URL(req.url);
+
+    if (req.method === "GET" && url.pathname === "/") {
+      return new Response(Bun.file(INDEX_HTML));
+    }
 
     if (req.method === "GET" && url.pathname === "/health") {
       return Response.json({ status: "ok" });

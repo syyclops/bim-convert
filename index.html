@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BIM Convert</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 480px; margin: 80px auto; padding: 0 20px; }
+  h1 { font-size: 24px; font-weight: 600; }
+  p { color: #666; margin: 8px 0 32px; font-size: 14px; }
+  .drop { border: 2px dashed #ccc; border-radius: 8px; padding: 48px 24px; text-align: center; cursor: pointer; transition: border-color 0.15s; }
+  .drop:hover, .drop.over { border-color: #000; }
+  .drop span { font-size: 14px; color: #999; }
+  .drop input { display: none; }
+  #status { margin-top: 24px; font-size: 14px; }
+  #status.error { color: #d00; }
+  .bar { background: #eee; border-radius: 4px; height: 6px; margin-top: 12px; overflow: hidden; }
+  .bar div { height: 100%; width: 0%; background: #000; transition: width 0.3s; }
+  a.dl { display: inline-block; margin-top: 16px; color: #000; font-weight: 500; font-size: 14px; }
+</style>
+</head>
+<body>
+<h1>BIM Convert</h1>
+<p>Convert Revit (.rvt) files to IFC. Upload a file and download the result.</p>
+<div class="drop" id="drop">
+  <span>Drop .rvt file here or click to browse</span>
+  <input type="file" accept=".rvt" id="file">
+</div>
+<div id="status"></div>
+<script>
+const drop = document.getElementById('drop');
+const input = document.getElementById('file');
+const status = document.getElementById('status');
+drop.onclick = () => input.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); };
+input.onchange = () => { if (input.files[0]) upload(input.files[0]); };
+
+async function upload(file) {
+  if (!file.name.toLowerCase().endsWith('.rvt')) { show('Please select a .rvt file', true); return; }
+  const name = file.name.replace(/\.rvt$/i, '.ifc');
+  drop.style.display = 'none';
+  show('<div class="bar"><div id="bar"></div></div>Uploading...', false);
+  const form = new FormData();
+  form.append('file', file);
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/convert');
+  xhr.responseType = 'blob';
+  xhr.upload.onprogress = e => { if (e.lengthComputable) { document.getElementById('bar').style.width = (e.loaded/e.total*50)+'%'; } };
+  xhr.onprogress = () => { document.getElementById('bar').style.width = '75%'; status.childNodes[1].textContent = 'Converting...'; };
+  xhr.onload = () => {
+    if (xhr.status === 200) {
+      document.getElementById('bar').style.width = '100%';
+      const url = URL.createObjectURL(xhr.response);
+      status.innerHTML = 'Done. <a class="dl" href="'+url+'" download="'+name+'">Download '+name+'</a>';
+    } else {
+      try { xhr.response.text().then(t => { const j = JSON.parse(t); show(j.error || 'Conversion failed', true); }); }
+      catch { show('Conversion failed (HTTP '+xhr.status+')', true); }
+    }
+  };
+  xhr.onerror = () => show('Network error', true);
+  xhr.send(form);
+}
+
+function show(msg, err) {
+  status.innerHTML = msg;
+  status.className = err ? 'error' : '';
+  if (err) { drop.style.display = ''; input.value = ''; }
+}
+</script>
+</body>
+</html>
