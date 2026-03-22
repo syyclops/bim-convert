@@ -130,8 +130,22 @@ async function processJob(
 
   try {
     // Download input
-    console.log(`[worker] Downloading input for job ${jobId}`);
+    console.log(`[worker] Downloading input for job ${jobId} (file: ${job.fileName}, expected: ${job.fileSize ?? "unknown"} bytes)`);
     await downloadBlobToFile(inputsContainer, `${jobId}.rvt`, inputPath);
+
+    // Verify downloaded file size matches what client reported
+    const downloadedSize = Bun.file(inputPath).size;
+    console.log(`[worker] Downloaded ${downloadedSize} bytes for job ${jobId}`);
+    if (job.fileSize && Math.abs(downloadedSize - job.fileSize) > 0) {
+      const errorMsg = `File size mismatch: expected ${job.fileSize} bytes, got ${downloadedSize} bytes. Upload may have been incomplete.`;
+      console.error(`[worker] Job ${jobId} failed: ${errorMsg}`);
+      await updateJobStatus(jobsContainer, jobId, "failed", {
+        finishedAt: new Date().toISOString(),
+        error: errorMsg,
+      });
+      await deleteMessage(queueClient, messageId, popReceipt);
+      return;
+    }
 
     // Run conversion with progress reporting
     let lastProgressWrite = 0;

@@ -12,6 +12,7 @@ export interface Job {
   status: JobStatus;
   progress: number; // 0-100
   fileName: string;
+  fileSize?: number; // bytes, reported by client
   error?: string;
   createdAt: string;
   queuedAt?: string;

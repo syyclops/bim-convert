@@ -127,8 +127,9 @@ console.log(`[server] BIM Convert API running on http://localhost:${server.port}
 
 async function handleCreateJob(req: Request): Promise<Response> {
   try {
-    const body = (await req.json()) as { fileName?: string };
+    const body = (await req.json()) as { fileName?: string; fileSize?: number };
     const fileName = body?.fileName;
+    const fileSize = body?.fileSize;
 
     if (!fileName || typeof fileName !== "string") {
       return Response.json({ error: "fileName is required" }, { status: 400 });
@@ -140,6 +141,9 @@ async function handleCreateJob(req: Request): Promise<Response> {
 
     const jobId = randomUUID();
     const job = createJob(jobId, fileName);
+    if (typeof fileSize === "number" && fileSize > 0) {
+      job.fileSize = fileSize;
+    }
     await writeJob(jobsContainer, job);
 
     const uploadUrl = generateUploadSasUrl(

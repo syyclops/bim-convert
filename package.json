@@ -12,7 +12,8 @@
     "test:unit": "bun run tests/run.ts tests/unit/",
     "test:integration": "bun run tests/run.ts tests/integration/",
     "test:e2e": "bun run tests/run.ts tests/e2e/",
-    "lint": "bun run tsc --noEmit"
+    "lint": "bun run tsc --noEmit",
+    "deploy": "cd infra && terraform apply -auto-approve"
   },
   "dependencies": {
     "@azure/storage-blob": "^12.26.0",

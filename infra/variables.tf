@@ -11,9 +11,9 @@ variable "api_vm_size" {
 }
 
 variable "worker_vm_size" {
-  description = "VM size for the conversion worker"
+  description = "VM size for the conversion worker (needs enough RAM for large .rvt files)"
   type        = string
-  default     = "Standard_B2s"
+  default     = "Standard_D4s_v3"
 }
 
 variable "admin_username" {
