@@ -174,6 +174,7 @@ async function processJob(
       outputPath,
       onProgress,
       abortController.signal,
+      config.stallTimeoutMs,
     );
     clearTimeout(timeoutId);
 
@@ -182,9 +183,12 @@ async function processJob(
 
     // Check result
     if (result.exitCode !== 0) {
-      const errorMsg = abortController.signal.aborted
-        ? `Conversion timed out after ${config.conversionTimeoutMs / 1000}s`
-        : `Converter exited with code ${result.exitCode}`;
+      const isStall = result.log.includes("--- STALLED");
+      const errorMsg = isStall
+        ? `Converter stalled — no output for ${config.stallTimeoutMs / 1000}s. This file may be too complex to convert.`
+        : abortController.signal.aborted
+          ? `Conversion timed out after ${config.conversionTimeoutMs / 1000}s`
+          : `Converter exited with code ${result.exitCode}`;
       console.error(`[worker] Job ${jobId} failed: ${errorMsg}`);
       await updateJobStatus(jobsContainer, jobId, "failed", {
         finishedAt: new Date().toISOString(),
@@ -202,6 +206,7 @@ async function processJob(
       "fatal error",
       "unhandled exception",
       "access violation",
+      "extraction not completed",
     ];
     const logError = errorPatterns.find((p) => logLower.includes(p));
     if (logError) {

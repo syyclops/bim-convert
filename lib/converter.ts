@@ -74,6 +74,10 @@ export class ProgressTracker {
 // Converter execution
 // ---------------------------------------------------------------------------
 
+// The DDC converter sometimes doesn't exit after completing. It writes the
+// success message but the process hangs open. We detect this and stop waiting.
+const COMPLETION_PATTERN = /conversion has been completed/i;
+
 export interface ConversionResult {
   exitCode: number;
   log: string;
@@ -85,6 +89,7 @@ export async function runConversion(
   outputPath: string,
   onProgress: (percent: number) => void,
   signal: AbortSignal,
+  stallTimeoutMs: number = 300_000,
 ): Promise<ConversionResult> {
   const cmdParts = config.converterCmd.split(/\s+/);
   const isMock = cmdParts[0] === "bun";
@@ -112,18 +117,57 @@ export async function runConversion(
   const onAbort = () => proc.kill();
   signal.addEventListener("abort", onAbort, { once: true });
 
-  // Read stdout line-by-line for progress
+  // Read stdout and stderr CONCURRENTLY to prevent pipe deadlock.
+  // If stderr fills the OS pipe buffer (~64KB) while we're reading stdout
+  // sequentially, the converter blocks on stderr write and never closes
+  // stdout — deadlocking both sides.
   let log = "";
+  const tracker = new ProgressTracker();
+
+  // Stderr: collect in background
+  const stderrPromise = new Response(proc.stderr).text();
+
+  // Stdout: read line-by-line for progress.
+  // Track when we last received output — if the converter goes silent for
+  // too long it's almost certainly stuck and we should kill it early rather
+  // than making the user wait for the full conversion timeout.
   const stdoutReader = proc.stdout.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  const tracker = new ProgressTracker();
+  let lastOutputAt = Date.now();
+  let stalled = false;
+  let completed = false;
 
   try {
     while (true) {
-      const { done, value } = await stdoutReader.read();
-      if (done) break;
+      // Race the next chunk against the stall timeout so we don't sit
+      // forever on a silent process.
+      const remaining = stallTimeoutMs - (Date.now() - lastOutputAt);
+      if (remaining <= 0) {
+        stalled = true;
+        proc.kill();
+        break;
+      }
 
+      const timeout = new Promise<{ done: true; value: undefined }>((resolve) =>
+        setTimeout(() => resolve({ done: true, value: undefined }), remaining),
+      );
+
+      const { done, value } = await Promise.race([
+        stdoutReader.read(),
+        timeout,
+      ]);
+
+      if (done && !value) {
+        // Stall timeout fired (our sentinel — real EOF has done=true but
+        // comes from the reader, not our timeout)
+        stalled = true;
+        proc.kill();
+        break;
+      }
+      if (done) break; // Real EOF
+
+      lastOutputAt = Date.now();
       const text = decoder.decode(value, { stream: true });
       log += text;
       buffer += text;
@@ -135,10 +179,22 @@ export async function runConversion(
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
+
+        // The DDC converter sometimes hangs after printing the completion
+        // message — the process never exits. Stop reading immediately.
+        if (COMPLETION_PATTERN.test(trimmed)) {
+          completed = true;
+        }
+
         const progress = tracker.processLine(trimmed);
         if (progress !== null) {
           onProgress(progress);
         }
+      }
+
+      if (completed) {
+        proc.kill();
+        break;
       }
     }
   } catch {
@@ -152,13 +208,23 @@ export async function runConversion(
     log += buffer;
   }
 
-  // Read stderr
-  const stderr = await new Response(proc.stderr).text();
+  // Collect stderr (already draining concurrently)
+  const stderr = await stderrPromise;
   if (stderr) log += "\n--- stderr ---\n" + stderr;
 
   // Wait for exit
   const exitCode = await proc.exited;
   signal.removeEventListener("abort", onAbort);
+
+  // The converter reported success but the process hung — treat as success.
+  // The worker will still verify the output file exists and isn't empty.
+  if (completed) {
+    return { exitCode: 0, log };
+  }
+
+  if (stalled) {
+    return { exitCode: 1, log: log + `\n--- STALLED (no output for ${stallTimeoutMs / 1000}s) ---\n` };
+  }
 
   if (signal.aborted) {
     return { exitCode: 1, log: log + "\n--- TIMED OUT ---\n" };

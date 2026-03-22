@@ -15,6 +15,7 @@ export interface Config {
 
   // Timeouts & limits
   conversionTimeoutMs: number;
+  stallTimeoutMs: number;
   queueVisibilityTimeoutSec: number;
   maxFileSizeMb: number;
   sasExpiryMinutes: number;
@@ -60,6 +61,7 @@ export function loadConfig(): Config {
     containerLogs: process.env.CONTAINER_LOGS ?? "logs",
 
     conversionTimeoutMs,
+    stallTimeoutMs: Number(process.env.STALL_TIMEOUT_MS) || 300_000, // 5 min
     queueVisibilityTimeoutSec,
     maxFileSizeMb: Number(process.env.MAX_FILE_SIZE_MB) || 500,
     sasExpiryMinutes: Number(process.env.SAS_EXPIRY_MINUTES) || 60,
